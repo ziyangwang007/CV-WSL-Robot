@@ -1,5 +1,5 @@
-## CV-SSL-MIS
-Exploring CNN and ViT for Semi-Supervised Medical Image Segmentation
+## CV-WSL-Robot
+Exploring CNN and ViT for Weakly-Supervised Surgical Tool Segmentation
 
 ## Demo Picture
 
