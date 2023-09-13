@@ -26,6 +26,9 @@ cd CV-WSL-Robot
 ```
 2. Download the pre-processed data 
 
+The preprocessed data can be downloaded from [Baidu Netdisk Link](https://pan.baidu.com/s/13RJouF0cmTXWxRosk__lUA) with passcode: 'bmrr', or [Google Drive Link]- TBC.
+
+
 
 3. Train the model (Release soon after acceptance)
 
