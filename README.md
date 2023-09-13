@@ -30,13 +30,23 @@ The preprocessed data can be downloaded from [Baidu Netdisk Link](https://pan.ba
 
 
 
-3. Train the model (Release soon after acceptance)
+3. Train the model
 
 ```
 cd code
 
-python XXX.py 
+python train_Ours_Weakly_Consistency_Robot_2D.py 
 ```
 
+4. Test the model
+
+```
+python test_2D_fully_ViT.py
+
+or 
+
+python test_2D_fully.py
+
+```
 
 ## Reference
