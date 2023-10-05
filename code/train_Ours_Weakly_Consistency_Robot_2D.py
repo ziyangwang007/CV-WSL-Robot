@@ -33,14 +33,14 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str,
                     default='../data/robotic', help='Name of Experiment')
 parser.add_argument('--exp', type=str,
-                    default='robotic/train_Weakly_Consistency_Robot_2D', help='experiment_name')
+                    default='robotic/Interpolation_Consistency_Training_8', help='experiment_name')
 parser.add_argument('--sup_type', type=str,
                     default='scribble', help='supervision type')
 parser.add_argument('--model', type=str,
                     default='ViT_Seg', help='model_name')
 parser.add_argument('--max_iterations', type=int,
                     default=30000, help='maximum epoch number to train')
-parser.add_argument('--batch_size', type=int, default=6,
+parser.add_argument('--batch_size', type=int, default=8,
                     help='batch_size per gpu')
 parser.add_argument('--deterministic', type=int,  default=1,
                     help='whether use deterministic training')
@@ -48,7 +48,7 @@ parser.add_argument('--base_lr', type=float,  default=0.01,
                     help='segmentation network learning rate')
 parser.add_argument('--patch_size', type=list,  default=[224, 224],
                     help='patch size of network input')
-parser.add_argument('--seed', type=int,  default=1337, help='random seed')
+parser.add_argument('--seed', type=int,  default=2022, help='random seed')
 parser.add_argument('--num_classes', type=int,  default=2,
                     help='output channel of network')
 
@@ -79,16 +79,16 @@ parser.add_argument('--eval', action='store_true',
 parser.add_argument('--throughput', action='store_true',
                     help='Test throughput only')
 
-parser.add_argument('--ict_alpha', type=int, default=0.2,
+parser.add_argument('--ict_alpha', type=int, default=0.5,
                     help='ict_alpha')
 # costs
 parser.add_argument('--ema_decay', type=float,  default=0.99, help='ema_decay')
 parser.add_argument('--consistency_type', type=str,
                     default="mse", help='consistency_type')
 parser.add_argument('--consistency', type=float,
-                    default=0.1, help='consistency')
+                    default=1, help='consistency')
 parser.add_argument('--consistency_rampup', type=float,
-                    default=200.0, help='consistency_rampup')
+                    default=40, help='consistency_rampup')
 args = parser.parse_args()
 config = get_config(args)
 
@@ -131,7 +131,7 @@ def train(args, snapshot_path):
     total_slices = len(db_train)
     print("Total silices is: {}".format(total_slices))
 
-    trainloader = DataLoader(db_train, batch_size=batch_size,
+    trainloader = DataLoader(db_train, batch_size=batch_size,shuffle=True,
                              num_workers=0, pin_memory=True, worker_init_fn=worker_init_fn,drop_last=True)
 
     model.train()
@@ -157,22 +157,28 @@ def train(args, snapshot_path):
             volume_batch, label_batch = sampled_batch['image'], sampled_batch['label']
             volume_batch, label_batch = volume_batch.cuda(), label_batch.cuda()
             
-            condition = label_batch[:] == 255
-            replacement = torch.tensor(2, dtype=torch.uint8, device='cuda:0')
-            label_batch[:] = torch.where(condition, replacement, label_batch[:])
-            
+            # condition = label_batch[:] == 255
+            # replacement = torch.tensor(2, dtype=torch.uint8, device='cuda:0')
+            # label_batch[:] = torch.where(condition, replacement, label_batch[:])
             # ICT mix factors
             ict_mix_factors = np.random.beta(
                 args.ict_alpha, args.ict_alpha, size=(batch_size//2, 1, 1, 1))
             ict_mix_factors = torch.tensor(
                 ict_mix_factors, dtype=torch.float).cuda()
             volume_batch_0 = volume_batch[0:batch_size//2, ...]
+            label_batch_0 = label_batch[0:batch_size//2, ...]
             volume_batch_1 = volume_batch[batch_size//2:, ...]
-
+            label_batch_1 = label_batch[batch_size//2:, ...]
+            batch_label_mixed = torch.zeros_like(label_batch_0)
             # Mix images
             batch_ux_mixed = volume_batch_0 * \
                 (1.0 - ict_mix_factors) + \
                 volume_batch_1 * ict_mix_factors
+            # for i in range(batch_label_mixed.shape[0]):
+            #     if ict_mix_factors[i] < 0.5 :
+            #         batch_label_mixed[i] = label_batch_0[i]
+            #     else :
+            #         batch_label_mixed[i] = label_batch_1[i]
             input_volume_batch = torch.cat(
                 [volume_batch, batch_ux_mixed], dim=0)
             outputs = model(input_volume_batch)
@@ -187,12 +193,17 @@ def train(args, snapshot_path):
             pseudo_label = torch.argmax(batch_pred_mixed, dim=1, keepdim=False)
             loss_ce_1 = pce_loss(outputs[:volume_batch.shape[0]],
                               label_batch[:volume_batch.shape[0]][:].long())
-            loss_ce_2 = ce_loss(outputs[volume_batch.shape[0]:],
+            # loss_ce_2 = pce_loss(outputs[volume_batch.shape[0]:],
+            #                      batch_label_mixed.long())
+            loss_ce_3 = ce_loss(outputs[volume_batch.shape[0]:],
                               pseudo_label.long())
             loss_dice = dice_loss(
                 outputs_soft[volume_batch.shape[0]:], pseudo_label.unsqueeze(1))
-            pseudo_loss = loss_ce_2 +loss_dice
-            consistency_weight = get_current_consistency_weight(iter_num//33)
+            consistency_loss = torch.mean(
+                (outputs_soft[volume_batch.shape[0]:] - batch_pred_mixed)**2)
+            #pseudo_loss = loss_ce_2 + loss_ce_3 + loss_dice + consistency_loss
+            pseudo_loss = loss_ce_3 +loss_dice + consistency_loss
+            consistency_weight = get_current_consistency_weight(iter_num//len(trainloader))
             loss = loss_ce_1 + consistency_weight * pseudo_loss
 
             optimizer.zero_grad()
@@ -214,8 +225,8 @@ def train(args, snapshot_path):
                               consistency_weight, iter_num)
 
             logging.info(
-                'iteration %d : loss : %f' %
-                (iter_num, loss.item()))
+                'iteration %d : loss : %f c_w : %f'
+                %(iter_num, loss.item(),consistency_weight))
 
             if iter_num % 20 == 0:
                 image = volume_batch[1, 0:1, :, :]
@@ -296,10 +307,10 @@ if __name__ == "__main__":
         args.exp, args.model)
     if not os.path.exists(snapshot_path):
         os.makedirs(snapshot_path)
-    if os.path.exists(snapshot_path + '/code'):
-        shutil.rmtree(snapshot_path + '/code')
-    shutil.copytree('.', snapshot_path + '/code',
-                    shutil.ignore_patterns(['.git', '__pycache__']))
+    # if os.path.exists(snapshot_path + '/code'):
+    #     shutil.rmtree(snapshot_path + '/code')
+    # shutil.copytree('.', snapshot_path + '/code',
+    #                 shutil.ignore_patterns(['.git', '__pycache__']))
 
     logging.basicConfig(filename=snapshot_path+"/log.txt", level=logging.INFO,
                         format='[%(asctime)s.%(msecs)03d] %(message)s', datefmt='%H:%M:%S')

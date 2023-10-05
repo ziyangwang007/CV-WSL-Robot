@@ -11,10 +11,7 @@ Exploring CNN and ViT for Weakly-Supervised Surgical Tool Segmentation
 * Some basic python packages such as Numpy, Scikit-image, SimpleITK, Scipy, Medpy ......
 
 ## Datasets
-Release soon after acceptance
-
-## Baseline Methods
-For other Weakly-Supervised segmentation methods -> [CV-WSL-MIS](https://github.com/ziyangwang007/CV-WSL-MIS)
+In this project, we use MICCAI Robotic Instrument Segmentation Challenge 2017 [Official Link](https://arxiv.org/abs/1902.06426).
 
 
 ## Usage
@@ -26,8 +23,9 @@ cd CV-WSL-Robot
 ```
 2. Download the pre-processed data 
 
-The preprocessed data can be downloaded from [Baidu Netdisk Link](https://pan.baidu.com/s/1GJJVvRvnv4mxPlFDBCpV3Q) with passcode: 'q1rv', or [Google Drive Link]- TBC.
+Download the pre-processed data and put the data in `../data/robotic`.  You can download the pre-processed dataset for Weakly-Supervised Learning study purpose, i.e. scribble annotation.
 
+Google Drive [Google Drive Link](https://drive.google.com/file/d/1bL-gFBtOIfdA2hG_ih7-UKJH3KwcT0jH/view?usp=sharing), or Baidu Netdisk [Baidu Netdisk Link](https://pan.baidu.com/s/14I4-srriko6k_DV5Kjwb6g) with passcode: '8zf8'.
 
 
 3. Train the model
@@ -46,6 +44,10 @@ python test_2D_fully_ViT.py
 or 
 
 python test_2D_fully.py
+
+or 
+
+python test_2D_vit.py
 
 ```
 
