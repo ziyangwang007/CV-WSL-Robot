@@ -13,6 +13,8 @@ Exploring CNN and ViT for Weakly-Supervised Surgical Tool Segmentation
 ## Datasets
 In this project, we use MICCAI Robotic Instrument Segmentation Challenge 2017 [Official Link](https://arxiv.org/abs/1902.06426).
 
+We generate scribble annotations via previous work 'code/scribbles_generator.py'.
+
 
 ## Usage
 
