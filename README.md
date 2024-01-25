@@ -13,7 +13,6 @@ Exploring CNN and ViT for Weakly-Supervised Surgical Tool Segmentation
 ## Datasets
 In this project, we use MICCAI Robotic Instrument Segmentation Challenge 2017 [Official Link](https://arxiv.org/abs/1902.06426).
 
-We generate scribble annotations via previous work 'code/scribbles_generator.py'.
 
 
 ## Usage
@@ -29,16 +28,22 @@ Download the pre-processed data and put the data in `../data/robotic`.  You can 
 
 Google Drive [Google Drive Link](https://drive.google.com/file/d/1bL-gFBtOIfdA2hG_ih7-UKJH3KwcT0jH/view?usp=sharing), or Baidu Netdisk [Baidu Netdisk Link](https://pan.baidu.com/s/14I4-srriko6k_DV5Kjwb6g) with passcode: '8zf8'.
 
+3. (Optional) Generate Scribble Annotations
 
-3. Train the model
+We generate scribble annotations via previous work `code/scribbles_generator.py`. Please kindly check the code, the input is the pixel-level ground truth, and the output is the scribble annotation.
+
+
+4. Train the model
 
 ```
 cd code
 
 python train_Ours_Weakly_Consistency_Robot_2D.py 
 ```
+We provide over 10 baseline methods as well in the `code/train_weakly_xxx.py`.
 
-4. Test the model
+
+5. Test the model
 
 ```
 python test_2D_fully_ViT.py
@@ -54,3 +59,7 @@ python test_2D_vit.py
 ```
 
 ## Reference
+
+```
+TBC
+```
