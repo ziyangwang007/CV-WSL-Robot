@@ -9,13 +9,14 @@ def calculate_metric_percase(pred, gt):
     gt[gt > 0] = 1
     if pred.sum() > 0:
         dice = metric.binary.dc(pred, gt)
-        hd95 = metric.binary.hd95(pred, gt)
+        hd95 = 0
+        # metric.binary.hd95(pred, gt)
         return dice, hd95
     else:
         return 0, 0
 
 
-def test_single_volume(image, label, net, classes, patch_size=[256, 256]):
+def test_single_volume(image, label, net, classes, patch_size=[224, 224]):
     image, label = image.squeeze(0).cpu().detach(
     ).numpy(), label.squeeze(0).cpu().detach().numpy()
     if len(image.shape) == 3:

@@ -6,15 +6,13 @@ import shutil
 import sys
 import time
 
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.tensorboard import SummaryWriter
+from tensorboardX import SummaryWriter
 from torch.nn import BCEWithLogitsLoss
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
@@ -26,14 +24,14 @@ from dataloaders import utils
 from dataloaders.dataset import BaseDataSets, RandomGenerator
 from networks.net_factory import net_factory
 from utils import losses, metrics, ramps
-from utils.gate_crf_loss import ModelLossSemsegGatedCRF
 from val_2D import test_single_volume, test_single_volume_ds
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str,
                     default='../data/robotic', help='Name of Experiment')
 parser.add_argument('--exp', type=str,
-                    default='robotic/pCE_GatedCRFLoss', help='experiment_name')
+                    default='robotic/pCE_fully', help='experiment_name')
+
 parser.add_argument('--sup_type', type=str,
                     default='scribble', help='supervision type')
 parser.add_argument('--model', type=str,
@@ -41,27 +39,17 @@ parser.add_argument('--model', type=str,
 parser.add_argument('--num_classes', type=int,  default=2,
                     help='output channel of network')
 parser.add_argument('--max_iterations', type=int,
-                    default=30000, help='maximum epoch number to train')
-parser.add_argument('--batch_size', type=int, default=8,
+                    default=60000, help='maximum epoch number to train')
+parser.add_argument('--batch_size', type=int, default=4,
                     help='batch_size per gpu')
 parser.add_argument('--deterministic', type=int,  default=1,
                     help='whether use deterministic training')
-parser.add_argument('--base_lr', type=float,  default=0.01,
+parser.add_argument('--base_lr', type=float,  default=0.03,
                     help='segmentation network learning rate')
-parser.add_argument('--patch_size', type=list,  default=[224, 224],
+parser.add_argument('--patch_size', type=list,  default=[256, 256],
                     help='patch size of network input')
 parser.add_argument('--seed', type=int,  default=2022, help='random seed')
 args = parser.parse_args()
-
-
-def tv_loss(predication):
-    min_pool_x = nn.functional.max_pool2d(
-        predication * -1, (3, 3), 1, 1) * -1
-    contour = torch.relu(nn.functional.max_pool2d(
-        min_pool_x, (3, 3), 1, 1) - min_pool_x)
-    # length
-    length = torch.mean(torch.abs(contour))
-    return length
 
 
 def train(args, snapshot_path):
@@ -73,25 +61,24 @@ def train(args, snapshot_path):
     model = net_factory(net_type=args.model, in_chns=1, class_num=num_classes)
     db_train = BaseDataSets(base_dir=args.root_path, split="train", transform=transforms.Compose([
         RandomGenerator(args.patch_size)
-    ]),  sup_type=args.sup_type)
+    ]), sup_type=args.sup_type)
     db_val = BaseDataSets(base_dir=args.root_path,
-                           split="val")
+                          split="val")
 
     def worker_init_fn(worker_id):
         random.seed(args.seed + worker_id)
 
     trainloader = DataLoader(db_train, batch_size=batch_size, shuffle=True,
-                             num_workers=0, pin_memory=True, worker_init_fn=worker_init_fn)
+                             num_workers=8, pin_memory=True, worker_init_fn=worker_init_fn)
     valloader = DataLoader(db_val, batch_size=1, shuffle=False,
-                           num_workers=0)
+                           num_workers=1)
 
     model.train()
 
     optimizer = optim.SGD(model.parameters(), lr=base_lr,
                           momentum=0.9, weight_decay=0.0001)
-    ce_loss = CrossEntropyLoss(ignore_index=2)
+    ce_loss = CrossEntropyLoss(ignore_index=4)
     dice_loss = losses.DiceLoss(num_classes)
-    gatecrf_loss = ModelLossSemsegGatedCRF()
 
     writer = SummaryWriter(snapshot_path + '/log')
     logging.info("{} iterations per epoch".format(len(trainloader)))
@@ -100,8 +87,6 @@ def train(args, snapshot_path):
     max_epoch = max_iterations // len(trainloader) + 1
     best_performance = 0.0
     iterator = tqdm(range(max_epoch), ncols=70)
-    loss_gatedcrf_kernels_desc = [{"weight": 1, "xy": 6, "rgb": 0.1}]
-    loss_gatedcrf_radius = 5
     for epoch_num in iterator:
         for i_batch, sampled_batch in enumerate(trainloader):
 
@@ -111,33 +96,10 @@ def train(args, snapshot_path):
             outputs = model(volume_batch)
             outputs_soft = torch.softmax(outputs, dim=1)
 
-            # print('*'*100)
-            # print(outputs.shape)
-            # print(outputs.max())
-            # print(outputs.min())
-            # print(torch.unique(outputs))
-
-            # print(label_batch[:].shape)
-            # print(label_batch[:].max())
-            # print(label_batch[:].min())
-            # print(torch.unique(label_batch[:]))
-
-            # print('*'*100)
-
-            condition = label_batch[:] == 255
-            replacement = torch.tensor(2, dtype=torch.uint8, device='cuda:0')
-            label_batch[:] = torch.where(condition, replacement, label_batch[:])
-            
             loss_ce = ce_loss(outputs, label_batch[:].long())
-            out_gatedcrf = gatecrf_loss(
-                outputs_soft,
-                loss_gatedcrf_kernels_desc,
-                loss_gatedcrf_radius,
-                volume_batch,
-                224,
-                224,
-            )["loss"]
-            loss = loss_ce + 0.1 * out_gatedcrf
+            loss = 0.5 * (loss_ce + dice_loss(outputs_soft,
+                          label_batch.unsqueeze(1)))
+            # loss = loss_ce
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -150,7 +112,6 @@ def train(args, snapshot_path):
             writer.add_scalar('info/lr', lr_, iter_num)
             writer.add_scalar('info/total_loss', loss, iter_num)
             writer.add_scalar('info/loss_ce', loss_ce, iter_num)
-            writer.add_scalar('info/out_gatedcrf', out_gatedcrf, iter_num)
 
             logging.info(
                 'iteration %d : loss : %f, loss_ce: %f' %
@@ -230,13 +191,13 @@ if __name__ == "__main__":
     torch.cuda.manual_seed(args.seed)
 
     snapshot_path = "../model/{}/{}".format(
-        args.exp,  args.sup_type)
+        args.exp, args.sup_type)
     if not os.path.exists(snapshot_path):
         os.makedirs(snapshot_path)
-    # if os.path.exists(snapshot_path + '/code'):
-    #     shutil.rmtree(snapshot_path + '/code')
-    # shutil.copytree('.', snapshot_path + '/code',
-    #                 shutil.ignore_patterns(['.git', '__pycache__']))
+    if os.path.exists(snapshot_path + '/code'):
+        shutil.rmtree(snapshot_path + '/code')
+    shutil.copytree('.', snapshot_path + '/code',
+                    shutil.ignore_patterns(['.git', '__pycache__']))
 
     logging.basicConfig(filename=snapshot_path+"/log.txt", level=logging.INFO,
                         format='[%(asctime)s.%(msecs)03d] %(message)s', datefmt='%H:%M:%S')

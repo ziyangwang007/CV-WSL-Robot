@@ -33,7 +33,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str,
                     default='../data/robotic', help='Name of Experiment')
 parser.add_argument('--exp', type=str,
-                    default='robotic/Interpolation_Consistency_Training_8', help='experiment_name')
+                    default='robotic/Ours', help='experiment_name')
 parser.add_argument('--sup_type', type=str,
                     default='scribble', help='supervision type')
 parser.add_argument('--model', type=str,

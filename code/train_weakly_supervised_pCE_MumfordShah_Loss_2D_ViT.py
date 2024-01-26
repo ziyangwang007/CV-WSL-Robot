@@ -12,7 +12,7 @@ import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 from torch.nn import BCEWithLogitsLoss
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
@@ -32,20 +32,18 @@ from networks.vision_transformer import SwinUnet as ViT_seg
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str,
-                    default='../data/ACDC', help='Name of Experiment')
+                    default='../data/robotic', help='Name of Experiment')
 parser.add_argument('--exp', type=str,
-                    default='ACDC_pCE_MumfordShah_Loss_ViT', help='experiment_name')
-parser.add_argument('--fold', type=str,
-                    default='fold1', help='cross validation')
+                    default='robotic/pCE_MumfordShah_Loss_ViT', help='experiment_name')
 parser.add_argument('--sup_type', type=str,
                     default='scribble', help='supervision type')
 parser.add_argument('--model', type=str,
                     default='unet', help='model_name')
-parser.add_argument('--num_classes', type=int,  default=4,
+parser.add_argument('--num_classes', type=int,  default=2,
                     help='output channel of network')
 parser.add_argument('--max_iterations', type=int,
-                    default=60000, help='maximum epoch number to train')
-parser.add_argument('--batch_size', type=int, default=12,
+                    default=30000, help='maximum epoch number to train')
+parser.add_argument('--batch_size', type=int, default=8,
                     help='batch_size per gpu')
 parser.add_argument('--deterministic', type=int,  default=1,
                     help='whether use deterministic training')
@@ -104,24 +102,24 @@ def train(args, snapshot_path):
 
     db_train = BaseDataSets(base_dir=args.root_path, split="train", transform=transforms.Compose([
         RandomGenerator(args.patch_size)
-    ]), fold=args.fold, sup_type=args.sup_type)
+    ]), sup_type=args.sup_type)
     db_val = BaseDataSets(base_dir=args.root_path,
-                          fold=args.fold, split="val")
+                          split="val")
 
     def worker_init_fn(worker_id):
         random.seed(args.seed + worker_id)
 
     trainloader = DataLoader(db_train, batch_size=batch_size, shuffle=True,
-                             num_workers=8, pin_memory=True, worker_init_fn=worker_init_fn)
+                             num_workers=0, pin_memory=True, worker_init_fn=worker_init_fn)
     valloader = DataLoader(db_val, batch_size=1, shuffle=False,
-                           num_workers=1)
+                           num_workers=0)
 
     model.train()
 
     optimizer = optim.SGD(model.parameters(), lr=base_lr,
                           momentum=0.9, weight_decay=0.0001)
-    ce_loss = CrossEntropyLoss(ignore_index=4)
-    dice_loss = losses.pDLoss(num_classes, ignore_index=4)
+    ce_loss = CrossEntropyLoss(ignore_index=2)
+    dice_loss = losses.pDLoss(num_classes, ignore_index=2)
     mumfordshah_loss = losses.MumfordShah_Loss()
 
     writer = SummaryWriter(snapshot_path + '/log')
@@ -140,6 +138,12 @@ def train(args, snapshot_path):
             outputs = model(volume_batch)
             outputs_soft = torch.softmax(outputs, dim=1)
 
+
+            condition = label_batch[:] == 255
+            replacement = torch.tensor(2, dtype=torch.uint8, device='cuda:0')
+            label_batch[:] = torch.where(condition, replacement, label_batch[:])
+
+            
             loss_ce = ce_loss(outputs, label_batch[:].long())
             loss_mumfordshah = mumfordshah_loss(volume_batch, outputs_soft)
             loss = loss_ce + 1e-6 * loss_mumfordshah
@@ -235,14 +239,14 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    snapshot_path = "../model/{}_{}/{}".format(
-        args.exp, args.fold, args.sup_type)
+    snapshot_path = "../model/{}/{}".format(
+        args.exp, args.sup_type)
     if not os.path.exists(snapshot_path):
         os.makedirs(snapshot_path)
-    if os.path.exists(snapshot_path + '/code'):
-        shutil.rmtree(snapshot_path + '/code')
-    shutil.copytree('.', snapshot_path + '/code',
-                    shutil.ignore_patterns(['.git', '__pycache__']))
+    # if os.path.exists(snapshot_path + '/code'):
+    #     shutil.rmtree(snapshot_path + '/code')
+    # shutil.copytree('.', snapshot_path + '/code',
+    #                 shutil.ignore_patterns(['.git', '__pycache__']))
 
     logging.basicConfig(filename=snapshot_path+"/log.txt", level=logging.INFO,
                         format='[%(asctime)s.%(msecs)03d] %(message)s', datefmt='%H:%M:%S')

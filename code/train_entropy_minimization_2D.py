@@ -5,8 +5,7 @@ import random
 import shutil
 import sys
 import time
-
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+from itertools import cycle
 
 import numpy as np
 import torch
@@ -14,7 +13,7 @@ import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.tensorboard import SummaryWriter
+from tensorboardX import SummaryWriter
 from torch.nn import BCEWithLogitsLoss
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
@@ -23,26 +22,25 @@ from torchvision.utils import make_grid
 from tqdm import tqdm
 
 from dataloaders import utils
-from dataloaders.dataset import BaseDataSets, RandomGenerator
+from dataloaders.dataset_semi import (BaseDataSets, RandomGenerator,
+                                      TwoStreamBatchSampler)
+from networks.discriminator import FCDiscriminator
 from networks.net_factory import net_factory
 from utils import losses, metrics, ramps
-from utils.gate_crf_loss import ModelLossSemsegGatedCRF
-from val_2D import test_single_volume, test_single_volume_ds
+from val_2D import test_single_volume
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str,
                     default='../data/robotic', help='Name of Experiment')
 parser.add_argument('--exp', type=str,
-                    default='robotic/pCE_GatedCRFLoss', help='experiment_name')
-parser.add_argument('--sup_type', type=str,
-                    default='scribble', help='supervision type')
+                    default='robotic/Entropy_Minimization', help='experiment_name')
 parser.add_argument('--model', type=str,
                     default='unet', help='model_name')
-parser.add_argument('--num_classes', type=int,  default=2,
-                    help='output channel of network')
+parser.add_argument('--sup_type', type=str,
+                    default='label', help='supervision type')
 parser.add_argument('--max_iterations', type=int,
-                    default=30000, help='maximum epoch number to train')
-parser.add_argument('--batch_size', type=int, default=8,
+                    default=60000, help='maximum epoch number to train')
+parser.add_argument('--batch_size', type=int, default=4,
                     help='batch_size per gpu')
 parser.add_argument('--deterministic', type=int,  default=1,
                     help='whether use deterministic training')
@@ -51,17 +49,28 @@ parser.add_argument('--base_lr', type=float,  default=0.01,
 parser.add_argument('--patch_size', type=list,  default=[224, 224],
                     help='patch size of network input')
 parser.add_argument('--seed', type=int,  default=2022, help='random seed')
+parser.add_argument('--num_classes', type=int,  default=4,
+                    help='output channel of network')
+
+# label and unlabel
+parser.add_argument('--labeled_bs', type=int, default=6,
+                    help='labeled_batch_size per gpu')
+parser.add_argument('--labeled_num', type=int, default=4,
+                    help='labeled data')
+# costs
+parser.add_argument('--ema_decay', type=float,  default=0.99, help='ema_decay')
+parser.add_argument('--consistency_type', type=str,
+                    default="mse", help='consistency_type')
+parser.add_argument('--consistency', type=float,
+                    default=0.1, help='consistency')
+parser.add_argument('--consistency_rampup', type=float,
+                    default=200.0, help='consistency_rampup')
 args = parser.parse_args()
 
 
-def tv_loss(predication):
-    min_pool_x = nn.functional.max_pool2d(
-        predication * -1, (3, 3), 1, 1) * -1
-    contour = torch.relu(nn.functional.max_pool2d(
-        min_pool_x, (3, 3), 1, 1) - min_pool_x)
-    # length
-    length = torch.mean(torch.abs(contour))
-    return length
+def get_current_consistency_weight(epoch):
+    # Consistency ramp-up from https://arxiv.org/abs/1610.02242
+    return args.consistency * ramps.sigmoid_rampup(epoch, args.consistency_rampup)
 
 
 def train(args, snapshot_path):
@@ -70,74 +79,70 @@ def train(args, snapshot_path):
     batch_size = args.batch_size
     max_iterations = args.max_iterations
 
-    model = net_factory(net_type=args.model, in_chns=1, class_num=num_classes)
-    db_train = BaseDataSets(base_dir=args.root_path, split="train", transform=transforms.Compose([
-        RandomGenerator(args.patch_size)
-    ]),  sup_type=args.sup_type)
-    db_val = BaseDataSets(base_dir=args.root_path,
-                           split="val")
-
     def worker_init_fn(worker_id):
         random.seed(args.seed + worker_id)
 
-    trainloader = DataLoader(db_train, batch_size=batch_size, shuffle=True,
-                             num_workers=0, pin_memory=True, worker_init_fn=worker_init_fn)
+    model = net_factory(net_type=args.model, in_chns=1, class_num=num_classes)
+
+    db_train_labeled = BaseDataSets(base_dir=args.root_path, num=4, labeled_type="labeled", split="train", transform=transforms.Compose([
+        RandomGenerator(args.patch_size)
+    ]))
+    db_train_unlabeled = BaseDataSets(base_dir=args.root_path, num=4, labeled_type="unlabeled", split="train", transform=transforms.Compose([
+        RandomGenerator(args.patch_size)]))
+
+    trainloader_labeled = DataLoader(db_train_labeled, batch_size=args.batch_size//2, shuffle=True,
+                                     num_workers=1, pin_memory=True, worker_init_fn=worker_init_fn)
+    trainloader_unlabeled = DataLoader(db_train_unlabeled, batch_size=args.batch_size//2, shuffle=True,
+                                       num_workers=1, pin_memory=True, worker_init_fn=worker_init_fn)
+
+    db_val = BaseDataSets(base_dir=args.root_path,
+                          split="val", )
     valloader = DataLoader(db_val, batch_size=1, shuffle=False,
-                           num_workers=0)
+                           num_workers=1)
 
     model.train()
 
     optimizer = optim.SGD(model.parameters(), lr=base_lr,
                           momentum=0.9, weight_decay=0.0001)
-    ce_loss = CrossEntropyLoss(ignore_index=2)
+
+    ce_loss = CrossEntropyLoss()
     dice_loss = losses.DiceLoss(num_classes)
-    gatecrf_loss = ModelLossSemsegGatedCRF()
 
     writer = SummaryWriter(snapshot_path + '/log')
-    logging.info("{} iterations per epoch".format(len(trainloader)))
+    logging.info("{} iterations per epoch".format(len(trainloader_labeled)))
 
     iter_num = 0
-    max_epoch = max_iterations // len(trainloader) + 1
+    max_epoch = max_iterations // len(trainloader_labeled) + 1
     best_performance = 0.0
     iterator = tqdm(range(max_epoch), ncols=70)
-    loss_gatedcrf_kernels_desc = [{"weight": 1, "xy": 6, "rgb": 0.1}]
-    loss_gatedcrf_radius = 5
     for epoch_num in iterator:
-        for i_batch, sampled_batch in enumerate(trainloader):
+        for i, data in enumerate(zip(cycle(trainloader_labeled), trainloader_unlabeled)):
+            sampled_batch_labeled, sampled_batch_unlabeled = data[0], data[1]
 
-            volume_batch, label_batch = sampled_batch['image'], sampled_batch['label']
+            volume_batch, label_batch = sampled_batch_labeled['image'], sampled_batch_labeled['label']
             volume_batch, label_batch = volume_batch.cuda(), label_batch.cuda()
+            unlabeled_volume_batch = sampled_batch_unlabeled['image'].cuda()
+
 
             outputs = model(volume_batch)
             outputs_soft = torch.softmax(outputs, dim=1)
 
-            # print('*'*100)
-            # print(outputs.shape)
-            # print(outputs.max())
-            # print(outputs.min())
-            # print(torch.unique(outputs))
+            outputs_unlabeled = model(unlabeled_volume_batch)
+            outputs_unlabeled_soft = torch.softmax(outputs_unlabeled, dim=1)
 
-            # print(label_batch[:].shape)
-            # print(label_batch[:].max())
-            # print(label_batch[:].min())
-            # print(torch.unique(label_batch[:]))
 
-            # print('*'*100)
-
-            condition = label_batch[:] == 255
-            replacement = torch.tensor(2, dtype=torch.uint8, device='cuda:0')
+            condition = label_batch[:] == 255   
+            replacement = torch.tensor(2, dtype=torch.uint8, device='cuda:0')   
             label_batch[:] = torch.where(condition, replacement, label_batch[:])
-            
+
+
             loss_ce = ce_loss(outputs, label_batch[:].long())
-            out_gatedcrf = gatecrf_loss(
-                outputs_soft,
-                loss_gatedcrf_kernels_desc,
-                loss_gatedcrf_radius,
-                volume_batch,
-                224,
-                224,
-            )["loss"]
-            loss = loss_ce + 0.1 * out_gatedcrf
+            loss_dice = dice_loss(outputs_soft, label_batch.unsqueeze(1))
+            supervised_loss = 0.5 * (loss_dice + loss_ce)
+
+            consistency_weight = get_current_consistency_weight(iter_num//300)
+            consistency_loss = losses.entropy_loss(outputs_unlabeled_soft, C=4)
+            loss = supervised_loss + consistency_weight * consistency_loss
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -150,15 +155,18 @@ def train(args, snapshot_path):
             writer.add_scalar('info/lr', lr_, iter_num)
             writer.add_scalar('info/total_loss', loss, iter_num)
             writer.add_scalar('info/loss_ce', loss_ce, iter_num)
-            writer.add_scalar('info/out_gatedcrf', out_gatedcrf, iter_num)
+            writer.add_scalar('info/loss_dice', loss_dice, iter_num)
+            writer.add_scalar('info/consistency_loss',
+                              consistency_loss, iter_num)
+            writer.add_scalar('info/consistency_weight',
+                              consistency_weight, iter_num)
 
             logging.info(
-                'iteration %d : loss : %f, loss_ce: %f' %
-                (iter_num, loss.item(), loss_ce.item()))
+                'iteration %d : loss : %f, loss_ce: %f, loss_dice: %f' %
+                (iter_num, loss.item(), loss_ce.item(), loss_dice.item()))
 
             if iter_num % 20 == 0:
                 image = volume_batch[1, 0:1, :, :]
-                image = (image - image.min()) / (image.max() - image.min())
                 writer.add_image('train/Image', image, iter_num)
                 outputs = torch.argmax(torch.softmax(
                     outputs, dim=1), dim=1, keepdim=True)
@@ -233,12 +241,12 @@ if __name__ == "__main__":
         args.exp,  args.sup_type)
     if not os.path.exists(snapshot_path):
         os.makedirs(snapshot_path)
-    # if os.path.exists(snapshot_path + '/code'):
-    #     shutil.rmtree(snapshot_path + '/code')
-    # shutil.copytree('.', snapshot_path + '/code',
-    #                 shutil.ignore_patterns(['.git', '__pycache__']))
+    if os.path.exists(snapshot_path + '/code'):
+        shutil.rmtree(snapshot_path + '/code')
+    shutil.copytree('.', snapshot_path + '/code',
+                    shutil.ignore_patterns(['.git', '__pycache__']))
 
-    logging.basicConfig(filename=snapshot_path+"/log.txt", level=logging.INFO,
+    logging.basicConfig(filename=snapshot_path + "/log.txt", level=logging.INFO,
                         format='[%(asctime)s.%(msecs)03d] %(message)s', datefmt='%H:%M:%S')
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     logging.info(str(args))

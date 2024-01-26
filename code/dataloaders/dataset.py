@@ -12,6 +12,7 @@ from scipy import ndimage
 from scipy.ndimage.interpolation import zoom
 from torch.utils.data import Dataset
 from torch.utils.data.sampler import Sampler
+from skimage.color import rgb2gray
 
 
 def pseudo_label_generator_acdc(data, seed, beta=100, mode='bf'):
@@ -35,73 +36,43 @@ def pseudo_label_generator_acdc(data, seed, beta=100, mode='bf'):
 
 
 class BaseDataSets(Dataset):
-    def __init__(self, base_dir=None, split='train', transform=None, fold="fold1", sup_type="label"):
+    def __init__(self, base_dir=None, split='train', transform=None, sup_type="label"):
         self._base_dir = base_dir
         self.sample_list = []
         self.split = split
         self.sup_type = sup_type
         self.transform = transform
-        train_ids, test_ids = self._get_fold_ids(fold)
+
+        # self.all_slices = os.listdir(self._base_dir + "/train")
+        # print(f"Contents of train directory: {self.all_slices}")
+
         if self.split == 'train':
             self.all_slices = os.listdir(
-                self._base_dir + "/ACDC_training_slices")
+                self._base_dir + "/train")
             self.sample_list = []
-            for ids in train_ids:
-                new_data_list = list(filter(lambda x: re.match(
-                    '{}.*'.format(ids), x) != None, self.all_slices))
-                self.sample_list.extend(new_data_list)
+            for file_name in self.all_slices:
+                if os.path.splitext(file_name)[1] == '.h5':
+                    self.sample_list.append(file_name)
 
         elif self.split == 'val':
             self.all_volumes = os.listdir(
-                self._base_dir + "/ACDC_training_volumes")
+                self._base_dir + "/val")
             self.sample_list = []
-            for ids in test_ids:
-                new_data_list = list(filter(lambda x: re.match(
-                    '{}.*'.format(ids), x) != None, self.all_volumes))
-                self.sample_list.extend(new_data_list)
+            for file_name in self.all_volumes:
+                if os.path.splitext(file_name)[1] == '.h5':
+                    self.sample_list.append(file_name)
+        elif self.split == 'test':
+            self.all_volumes = os.listdir(
+                self._base_dir + "/test")
+            self.sample_list = []
+            for file_name in self.all_volumes:
+                if os.path.splitext(file_name)[1] == '.h5':
+                    self.sample_list.append(file_name)
 
         # if num is not None and self.split == "train":
         #     self.sample_list = self.sample_list[:num]
         print("total {} samples".format(len(self.sample_list)))
 
-    def _get_fold_ids(self, fold):
-        all_cases_set = ["patient{:0>3}".format(i) for i in range(1, 101)]
-        fold1_testing_set = [
-            "patient{:0>3}".format(i) for i in range(1, 21)]
-        fold1_training_set = [
-            i for i in all_cases_set if i not in fold1_testing_set]
-
-        fold2_testing_set = [
-            "patient{:0>3}".format(i) for i in range(21, 41)]
-        fold2_training_set = [
-            i for i in all_cases_set if i not in fold2_testing_set]
-
-        fold3_testing_set = [
-            "patient{:0>3}".format(i) for i in range(41, 61)]
-        fold3_training_set = [
-            i for i in all_cases_set if i not in fold3_testing_set]
-
-        fold4_testing_set = [
-            "patient{:0>3}".format(i) for i in range(61, 81)]
-        fold4_training_set = [
-            i for i in all_cases_set if i not in fold4_testing_set]
-
-        fold5_testing_set = [
-            "patient{:0>3}".format(i) for i in range(81, 101)]
-        fold5_training_set = [
-            i for i in all_cases_set if i not in fold5_testing_set]
-        if fold == "fold1":
-            return [fold1_training_set, fold1_testing_set]
-        elif fold == "fold2":
-            return [fold2_training_set, fold2_testing_set]
-        elif fold == "fold3":
-            return [fold3_training_set, fold3_testing_set]
-        elif fold == "fold4":
-            return [fold4_training_set, fold4_testing_set]
-        elif fold == "fold5":
-            return [fold5_training_set, fold5_testing_set]
-        else:
-            return "ERROR KEY"
 
     def __len__(self):
         return len(self.sample_list)
@@ -110,15 +81,21 @@ class BaseDataSets(Dataset):
         case = self.sample_list[idx]
         if self.split == "train":
             h5f = h5py.File(self._base_dir +
-                            "/ACDC_training_slices/{}".format(case), 'r')
-        else:
+                            "/train/{}".format(case), 'r')
+        elif self.split == "val":
             h5f = h5py.File(self._base_dir +
-                            "/ACDC_training_volumes/{}".format(case), 'r')
+                            "/val/{}".format(case), 'r')
+        elif self.split == "test":
+            h5f = h5py.File(self._base_dir +
+                        "/test/{}".format(case), 'r')
+
+
         image = h5f['image'][:]
+        image = rgb2gray(image)/255.0
+        
         label = h5f['label'][:]
         sample = {'image': image, 'label': label}
         if self.split == "train":
-            image = h5f['image'][:]
             if self.sup_type == "random_walker":
                 label = pseudo_label_generator_acdc(image, h5f["scribble"][:])
             else:
@@ -126,9 +103,8 @@ class BaseDataSets(Dataset):
             sample = {'image': image, 'label': label}
             sample = self.transform(sample)
         else:
-            image = h5f['image'][:]
-            label = h5f['label'][:]
             sample = {'image': image, 'label': label}
+        sample['label'][sample['label'] == 255] = 2
         sample["idx"] = idx
         return sample
 
@@ -150,7 +126,6 @@ def random_rotate(image, label, cval):
                            reshape=False, mode="constant", cval=cval)
     return image, label
 
-
 class RandomGenerator(object):
     def __init__(self, output_size):
         self.output_size = output_size
@@ -163,8 +138,8 @@ class RandomGenerator(object):
         if random.random() > 0.5:
             image, label = random_rot_flip(image, label)
         elif random.random() > 0.5:
-            if 4 in np.unique(label):
-                image, label = random_rotate(image, label, cval=4)
+            if 2 in np.unique(label):
+                image, label = random_rotate(image, label, cval=2)
             else:
                 image, label = random_rotate(image, label, cval=0)
         x, y = image.shape
