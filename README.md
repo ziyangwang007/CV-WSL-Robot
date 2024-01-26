@@ -24,9 +24,7 @@ cd CV-WSL-Robot
 ```
 2. Download the pre-processed data 
 
-Download the pre-processed data and put the data in `../data/robotic`.  You can download the pre-processed dataset for Weakly-Supervised Learning study purpose, i.e. scribble annotation.
-
-Google Drive [Google Drive Link](https://drive.google.com/file/d/1bL-gFBtOIfdA2hG_ih7-UKJH3KwcT0jH/view?usp=sharing), or Baidu Netdisk [Baidu Netdisk Link](https://pan.baidu.com/s/14I4-srriko6k_DV5Kjwb6g) with passcode: '8zf8'.
+Download the pre-processed data and put the data in `../data/robotic`.  You can download the pre-processed dataset for Weakly-Supervised Learning study purpose, i.e. scribble annotation. Google Drive [Google Drive Link](https://drive.google.com/file/d/1bL-gFBtOIfdA2hG_ih7-UKJH3KwcT0jH/view?usp=sharing), or Baidu Netdisk [Baidu Netdisk Link](https://pan.baidu.com/s/14I4-srriko6k_DV5Kjwb6g) with passcode: '8zf8'.
 
 3. (Optional) Generate Scribble Annotations
 
@@ -40,8 +38,18 @@ cd code
 
 python train_Ours_Weakly_Consistency_Robot_2D.py 
 ```
-We provide over 10 baseline methods as well in the `code/train_weakly_xxx.py`.
+We provide some baseline methods as well.
 
+Fully Supervised - CNN (UNet) -> [Paper Link](https://arxiv.org/pdf/1505.04597.pdf)
+```
+python train_fully_supervised_2D
+
+```
+
+Fully Supervised - ViT (SwinUNet) -> [Paper Link](https://arxiv.org/abs/2105.05537)
+```
+python test_2D_fully_ViT
+```
 
 5. Test the model
 
