@@ -69,5 +69,5 @@ python test_2D_vit.py
 ## Reference
 
 ```
-TBC
+Z. Wang et al., "S4RoboFormer: Scribble-Supervised Surgical Robotic Segmentation Transformer via Augmented Consistency Training," in IEEE Transactions on Medical Robotics and Bionics, doi: 10.1109/TMRB.2025.3604103.
 ```
